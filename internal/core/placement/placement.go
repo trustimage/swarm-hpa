@@ -3,11 +3,13 @@
 // recovered, constraint-satisfying node — and the rebalancer — which must only
 // propose moving a task to a node the service is actually allowed to run on.
 //
-// The semantics are deliberately conservative: a constraint the evaluator cannot
-// parse, or whose key it does not recognise, never *excludes* a node (it is
-// skipped), so exotic constraint forms cannot silently widen exclusion. A
-// parseable, recognised constraint the node violates makes the whole node
-// unsatisfying.
+// Two evaluation modes exist because "conservative" points in opposite
+// directions for the two callers. NodeSatisfies (the rebalancer) skips a
+// constraint it cannot parse or whose key it does not recognise, so exotic
+// constraint forms never silently widen exclusion. NodeSatisfiesStrict (the
+// healer) treats such a constraint as unmet: there a false "satisfied" is what
+// triggers a force-update of a healthy service. In both modes a parseable,
+// recognised constraint the node violates makes the whole node unsatisfying.
 package placement
 
 import (
@@ -24,11 +26,12 @@ const (
 )
 
 // Constraint key prefixes/keys the evaluator can resolve. Keys outside this set
-// (e.g. node.role, engine.labels.*, platform.*) are unknown and never used to
-// exclude a node.
+// (e.g. engine.labels.*, node.platform.*) are unknown: skipped by NodeSatisfies,
+// unmet for NodeSatisfiesStrict.
 const (
 	keyHostname    = "node.hostname"
 	keyID          = "node.id"
+	keyRole        = "node.role"
 	labelKeyPrefix = "node.labels."
 )
 
@@ -37,13 +40,30 @@ const (
 // not recognise, are skipped rather than treated as failures. An empty
 // constraint set is vacuously satisfied.
 func NodeSatisfies(n model.NodeView, constraints []string) bool {
+	return satisfies(n, constraints, false)
+}
+
+// NodeSatisfiesStrict is NodeSatisfies for callers whose false positive is the
+// dangerous outcome: a constraint it cannot parse, or whose key it does not
+// recognise, makes the node unsatisfying instead of being skipped.
+func NodeSatisfiesStrict(n model.NodeView, constraints []string) bool {
+	return satisfies(n, constraints, true)
+}
+
+func satisfies(n model.NodeView, constraints []string, strict bool) bool {
 	for _, c := range constraints {
 		key, op, value, ok := parseConstraint(c)
 		if !ok {
+			if strict {
+				return false
+			}
 			continue // unparseable: never exclude
 		}
 		actual, known := nodeValue(n, key)
 		if !known {
+			if strict {
+				return false
+			}
 			continue // key we cannot evaluate: never exclude
 		}
 		equal := actual == value
@@ -71,6 +91,8 @@ func nodeValue(n model.NodeView, key string) (value string, known bool) {
 		return n.Name, true
 	case key == keyID:
 		return n.ID, true
+	case key == keyRole:
+		return n.Role, true
 	case strings.HasPrefix(key, labelKeyPrefix):
 		return n.Labels[strings.TrimPrefix(key, labelKeyPrefix)], true
 	default:

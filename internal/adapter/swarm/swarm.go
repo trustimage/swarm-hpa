@@ -304,6 +304,7 @@ func toNodeView(n dswarm.Node) model.NodeView {
 	return model.NodeView{
 		ID:           n.ID,
 		Name:         n.Description.Hostname,
+		Role:         string(n.Spec.Role),
 		Availability: string(n.Spec.Availability),
 		State:        string(n.Status.State),
 		Labels:       n.Spec.Labels,

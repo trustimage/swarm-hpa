@@ -40,12 +40,31 @@ func downNode() model.NodeView {
 	return n
 }
 
+// Real Swarm scheduler errors for a pending task.
+const (
+	errConstraints = "no suitable node (scheduling constraints not satisfied on 1 node)"
+	errResources   = "no suitable node (insufficient resources on 1 node)"
+	errMixed       = "no suitable node (scheduling constraints not satisfied on 2 nodes; insufficient resources on 1 node)"
+)
+
+// pendingSince is a task pending on placement constraints — the healable case.
 func pendingSince(id string, since time.Time) model.TaskView {
+	return pendingWithErr(id, since, errConstraints)
+}
+
+func pendingWithErr(id string, since time.Time, err string) model.TaskView {
 	return model.TaskView{
 		ID: id, ServiceID: "s1",
 		State: model.TaskStatePending, DesiredState: model.TaskStateRunning,
+		Err:   err,
 		Since: since,
 	}
+}
+
+func managerNode() model.NodeView {
+	n := activeNode()
+	n.Role = "manager"
+	return n
 }
 
 func TestDetectStuckSignature(t *testing.T) {
@@ -63,6 +82,18 @@ func TestDetectStuckSignature(t *testing.T) {
 	}
 	if v.NodeID != "n1" {
 		t.Errorf("NodeID = %q, want n1", v.NodeID)
+	}
+}
+
+func TestDetectStuckOnRoleConstraint(t *testing.T) {
+	v := Detect(
+		svcWith("node.role==manager"),
+		[]model.TaskView{pendingSince("t9", t0)},
+		[]model.NodeView{managerNode()},
+		threshold, nowBeyond,
+	)
+	if !v.Stuck {
+		t.Fatalf("expected stuck verdict on a recovered manager, got %+v", v)
 	}
 }
 
@@ -107,6 +138,41 @@ func TestDetectNotStuck(t *testing.T) {
 		{
 			name:  "active node does not satisfy constraint",
 			svc:   svcWith("node.labels.nodeNum==2"),
+			tasks: []model.TaskView{pendingSince("t1", t0)},
+			nodes: []model.NodeView{activeNode()},
+			now:   nowBeyond,
+		},
+		{
+			name:  "pending on resources, not constraints",
+			svc:   svcWith("node.labels.nodeNum==1"),
+			tasks: []model.TaskView{pendingWithErr("t1", t0, errResources)},
+			nodes: []model.NodeView{activeNode()},
+			now:   nowBeyond,
+		},
+		{
+			name:  "pending on constraints and resources",
+			svc:   svcWith("node.labels.nodeNum==1"),
+			tasks: []model.TaskView{pendingWithErr("t1", t0, errMixed)},
+			nodes: []model.NodeView{activeNode()},
+			now:   nowBeyond,
+		},
+		{
+			name:  "pending with no scheduler error yet",
+			svc:   svcWith("node.labels.nodeNum==1"),
+			tasks: []model.TaskView{pendingWithErr("t1", t0, "")},
+			nodes: []model.NodeView{activeNode()},
+			now:   nowBeyond,
+		},
+		{
+			name:  "role constraint on a worker",
+			svc:   svcWith("node.role==manager"),
+			tasks: []model.TaskView{pendingSince("t1", t0)},
+			nodes: []model.NodeView{func() model.NodeView { n := activeNode(); n.Role = "worker"; return n }()},
+			now:   nowBeyond,
+		},
+		{
+			name:  "unknown constraint key never makes a node recovered",
+			svc:   svcWith("engine.labels.foo==bar"),
 			tasks: []model.TaskView{pendingSince("t1", t0)},
 			nodes: []model.NodeView{activeNode()},
 			now:   nowBeyond,

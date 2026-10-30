@@ -10,6 +10,7 @@ func TestNodeSatisfies(t *testing.T) {
 	node := model.NodeView{
 		ID:           "n1",
 		Name:         "host-1",
+		Role:         "manager",
 		Availability: model.NodeAvailabilityActive,
 		State:        model.NodeStateReady,
 		Labels:       map[string]string{"nodeNum": "1", "tier": "gpu"},
@@ -31,18 +32,54 @@ func TestNodeSatisfies(t *testing.T) {
 		{"hostname mismatch", []string{"node.hostname==host-2"}, false},
 		{"id eq", []string{"node.id==n1"}, true},
 		{"unparseable skipped", []string{"node.labels.nodeNum"}, true},
-		{"unknown key skipped", []string{"node.role==manager"}, true},
+		{"role eq", []string{"node.role==manager"}, true},
+		{"role mismatch", []string{"node.role==worker"}, false},
+		{"unknown key skipped", []string{"node.platform.os==windows"}, true},
 		{"engine labels skipped", []string{"engine.labels.foo==bar"}, true},
 		{"multiple all satisfied", []string{"node.labels.nodeNum==1", "node.hostname==host-1"}, true},
 		{"multiple one fails", []string{"node.labels.nodeNum==1", "node.hostname==host-2"}, false},
-		{"unknown key never widens exclusion", []string{"node.role==worker", "node.labels.nodeNum==1"}, true},
-		{"unknown key plus failing parseable still fails", []string{"node.role==worker", "node.labels.nodeNum==2"}, false},
+		{"unknown key never widens exclusion", []string{"node.platform.os==windows", "node.labels.nodeNum==1"}, true},
+		{"unknown key plus failing parseable still fails", []string{"node.platform.os==windows", "node.labels.nodeNum==2"}, false},
 		{"no constraints vacuously true", nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := NodeSatisfies(node, tc.constraints); got != tc.want {
 				t.Errorf("NodeSatisfies(%v) = %v, want %v", tc.constraints, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNodeSatisfiesStrict(t *testing.T) {
+	node := model.NodeView{
+		ID:           "n1",
+		Name:         "host-1",
+		Role:         "manager",
+		Availability: model.NodeAvailabilityActive,
+		State:        model.NodeStateReady,
+		Labels:       map[string]string{"nodeNum": "1"},
+	}
+
+	cases := []struct {
+		name        string
+		constraints []string
+		want        bool
+	}{
+		{"label eq match", []string{"node.labels.nodeNum==1"}, true},
+		{"label eq mismatch", []string{"node.labels.nodeNum==2"}, false},
+		{"role eq", []string{"node.role==manager"}, true},
+		{"role mismatch", []string{"node.role==worker"}, false},
+		{"unparseable is unmet", []string{"node.labels.nodeNum"}, false},
+		{"unknown key is unmet", []string{"node.platform.os==linux"}, false},
+		{"engine labels are unmet", []string{"engine.labels.foo==bar"}, false},
+		{"unknown key fails an otherwise satisfied set", []string{"node.labels.nodeNum==1", "engine.labels.foo==bar"}, false},
+		{"no constraints vacuously true", nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NodeSatisfiesStrict(node, tc.constraints); got != tc.want {
+				t.Errorf("NodeSatisfiesStrict(%v) = %v, want %v", tc.constraints, got, tc.want)
 			}
 		})
 	}
@@ -107,7 +144,7 @@ func TestNodeValue(t *testing.T) {
 		{"id", keyID, "n1", true},
 		{"present label", labelKeyPrefix + "nodeNum", "1", true},
 		{"missing label is known-empty", labelKeyPrefix + "zone", "", true},
-		{"node.role unknown", "node.role", "", false},
+		{"role", keyRole, "", true},
 		{"engine label unknown", "engine.labels.foo", "", false},
 	}
 	for _, tc := range cases {

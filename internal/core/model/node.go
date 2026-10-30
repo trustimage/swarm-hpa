@@ -11,6 +11,7 @@ const (
 type NodeView struct {
 	ID           string
 	Name         string            // hostname, matched by node.hostname constraints
+	Role         string            // manager | worker, matched by node.role constraints
 	Availability string            // active | pause | drain
 	State        string            // ready | down | unknown | ...
 	Labels       map[string]string // node spec labels, matched by node.labels.* constraints

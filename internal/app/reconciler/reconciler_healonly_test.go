@@ -14,6 +14,7 @@ func stuckPending(now time.Time) model.TaskView {
 	return model.TaskView{
 		ID: "t1", ServiceID: "s1",
 		State: model.TaskStatePending, DesiredState: model.TaskStateRunning,
+		Err:   "no suitable node (scheduling constraints not satisfied on 1 node)",
 		Since: now.Add(-10 * time.Minute),
 	}
 }

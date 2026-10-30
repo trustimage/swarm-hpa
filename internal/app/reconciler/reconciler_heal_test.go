@@ -71,6 +71,7 @@ func TestObserveHealDecision(t *testing.T) {
 		return model.TaskView{
 			ID: id, ServiceID: "s1",
 			State: model.TaskStatePending, DesiredState: model.TaskStateRunning,
+			Err:   "no suitable node (scheduling constraints not satisfied on 1 node)",
 			Since: clk.now.Add(-age),
 		}
 	}
