@@ -292,6 +292,40 @@ func TestAdapterManagedServicesSkipsMisconfigured(t *testing.T) {
 	}
 }
 
+func TestAdapterManagedServicesReadsContainerSpecLabels(t *testing.T) {
+	reps := uint64(1)
+	// Dokploy writes its "Swarm labels" to the container spec, not the service.
+	dokploy := dswarm.Service{
+		ID: "dk",
+		Spec: dswarm.ServiceSpec{
+			Annotations:  dswarm.Annotations{Name: "orientacao"},
+			Mode:         dswarm.ServiceMode{Replicated: &dswarm.ReplicatedService{Replicas: &reps}},
+			TaskTemplate: dswarm.TaskSpec{ContainerSpec: &dswarm.ContainerSpec{Labels: optedInLabels()}},
+		},
+	}
+	// A service label wins over the container-spec label of the same key.
+	optedOut := dswarm.Service{
+		ID: "out",
+		Spec: dswarm.ServiceSpec{
+			Annotations:  dswarm.Annotations{Name: "out", Labels: map[string]string{"swarm.autoscaler.enabled": "false"}},
+			TaskTemplate: dswarm.TaskSpec{ContainerSpec: &dswarm.ContainerSpec{Labels: map[string]string{"swarm.autoscaler.enabled": "true"}}},
+		},
+	}
+	plain := dswarm.Service{ID: "plain", Spec: dswarm.ServiceSpec{Annotations: dswarm.Annotations{Name: "plain"}}}
+	a := &Adapter{cli: &fakeDockerAPI{services: []dswarm.Service{dokploy, optedOut, plain}}, logger: discardLogger()}
+
+	got, err := a.ManagedServices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Ref.Name != "orientacao" || !got[0].Autoscale {
+		t.Fatalf("want only the container-labelled service, autoscaled, got %+v", got)
+	}
+	if got[0].Replicas != 1 {
+		t.Errorf("Replicas = %d, want 1", got[0].Replicas)
+	}
+}
+
 func TestAdapterManagedServicesPropagatesError(t *testing.T) {
 	a := &Adapter{cli: &fakeDockerAPI{err: errors.New("boom")}, logger: discardLogger()}
 	if _, err := a.ManagedServices(context.Background()); err == nil {

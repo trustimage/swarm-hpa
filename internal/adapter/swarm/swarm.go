@@ -57,60 +57,64 @@ func New(cli *client.Client, logger *slog.Logger) *Adapter {
 // model.ManagedService. A service that opted in but is misconfigured is logged at
 // WARN and skipped (never fatal).
 //
-// A single Docker label filter cannot OR values, so the three opt-in labels are
-// queried separately and merged, deduped by service ID (a service may carry more
-// than one).
+// The opt-in labels are read from the service spec AND from the task template's
+// container spec (see effectiveLabels): Dokploy, for one, writes its "Swarm
+// labels" to ContainerSpec.Labels, where a Docker service label filter cannot
+// see them. So the services are listed once, unfiltered, and the opt-in is
+// decided here.
 func (a *Adapter) ManagedServices(ctx context.Context) ([]model.ManagedService, error) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 
-	enabledSvcs, err := a.listByLabel(ctx, config.LabelEnabled+"=true")
+	services, err := a.cli.ServiceList(ctx, dswarm.ServiceListOptions{})
 	if err != nil {
-		return nil, err
-	}
-	healSvcs, err := a.listByLabel(ctx, config.LabelHeal+"=true")
-	if err != nil {
-		return nil, err
-	}
-	rebalanceSvcs, err := a.listByLabel(ctx, config.LabelRebalance+"=true")
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("service list: %w", err)
 	}
 
-	total := len(enabledSvcs) + len(healSvcs) + len(rebalanceSvcs)
-	seen := make(map[string]struct{}, total)
-	managed := make([]model.ManagedService, 0, total)
-	for _, group := range [][]dswarm.Service{enabledSvcs, healSvcs, rebalanceSvcs} {
-		for _, svc := range group {
-			if _, dup := seen[svc.ID]; dup {
-				continue
-			}
-			seen[svc.ID] = struct{}{}
-			ms, err := toManagedService(svc)
-			if err != nil {
-				a.logger.Warn("skipping misconfigured managed service",
-					"service", svc.Spec.Name, "id", svc.ID, "err", err)
-				continue
-			}
-			a.logger.Debug("observed managed service",
-				"service", ms.Ref.Name, "replicas", ms.Replicas,
-				"autoscale", ms.Autoscale, "heal", ms.Heal, "rebalance", ms.Rebalance,
-				"min", ms.Policy.Min, "max", ms.Policy.Max, "metric", ms.Policy.Metric)
-			managed = append(managed, ms)
+	managed := make([]model.ManagedService, 0)
+	for _, svc := range services {
+		if !optedIn(effectiveLabels(svc)) {
+			continue
 		}
+		ms, err := toManagedService(svc)
+		if err != nil {
+			a.logger.Warn("skipping misconfigured managed service",
+				"service", svc.Spec.Name, "id", svc.ID, "err", err)
+			continue
+		}
+		a.logger.Debug("observed managed service",
+			"service", ms.Ref.Name, "replicas", ms.Replicas,
+			"autoscale", ms.Autoscale, "heal", ms.Heal, "rebalance", ms.Rebalance,
+			"min", ms.Policy.Min, "max", ms.Policy.Max, "metric", ms.Policy.Metric)
+		managed = append(managed, ms)
 	}
 	a.logger.Debug("managed services observed", "count", len(managed))
 	return managed, nil
 }
 
-// listByLabel returns the services carrying an exact "key=value" label.
-func (a *Adapter) listByLabel(ctx context.Context, label string) ([]dswarm.Service, error) {
-	f := filters.NewArgs(filters.Arg("label", label))
-	services, err := a.cli.ServiceList(ctx, dswarm.ServiceListOptions{Filters: f})
-	if err != nil {
-		return nil, fmt.Errorf("service list (%s): %w", label, err)
+// effectiveLabels merges the container-spec labels with the service labels; a
+// key present on both takes the service label's value.
+func effectiveLabels(svc dswarm.Service) map[string]string {
+	var container map[string]string
+	if cs := svc.Spec.TaskTemplate.ContainerSpec; cs != nil {
+		container = cs.Labels
 	}
-	return services, nil
+	merged := make(map[string]string, len(container)+len(svc.Spec.Labels))
+	for k, v := range container {
+		merged[k] = v
+	}
+	for k, v := range svc.Spec.Labels {
+		merged[k] = v
+	}
+	return merged
+}
+
+// optedIn reports whether any of the three opt-in labels is exactly "true" —
+// the same match the former label filters made.
+func optedIn(labels map[string]string) bool {
+	return labels[config.LabelEnabled] == "true" ||
+		labels[config.LabelHeal] == "true" ||
+		labels[config.LabelRebalance] == "true"
 }
 
 // Tasks returns the desired-state-running tasks of a single service.
@@ -248,7 +252,7 @@ func (a *Adapter) StackServices(ctx context.Context, stack string) ([]model.Stac
 // toManagedService maps an SDK service to a model.ManagedService, parsing its
 // policy from labels. It is pure (no client, no logging) so it is unit-testable.
 func toManagedService(svc dswarm.Service) (model.ManagedService, error) {
-	policy, autoscale, heal, rebalance, err := config.ParsePolicy(svc.Spec.Labels)
+	policy, autoscale, heal, rebalance, err := config.ParsePolicy(effectiveLabels(svc))
 	if err != nil {
 		return model.ManagedService{}, err
 	}
